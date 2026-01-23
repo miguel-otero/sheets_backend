@@ -8,5 +8,8 @@ services:
       dockerfile: ../Dockerfile
     volumes:
       - ./app:/app
+      - ./conn/gcp.json:/gcp.json
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/gcp.json
     ports:
       - "8080:80"

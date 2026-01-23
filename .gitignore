@@ -1,2 +1,3 @@
 conn/*.env
 __pycache__
+conn/*.json
