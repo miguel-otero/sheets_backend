@@ -36,6 +36,7 @@
 
 * `docker exec -it <contenedor> <cmd>` → ejecutar dentro
 
+  * Ej: docker exec -it sheets_backend bash
   * Ej: `docker exec -it web sh` (o `bash` si existe)
 * `docker logs <contenedor>` → ver logs
 * `docker logs -f <contenedor>` → seguir logs en vivo
