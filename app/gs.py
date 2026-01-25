@@ -29,11 +29,6 @@ DRIVE_SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-#Debug
-SCOPES = [
-  "https://www.googleapis.com/auth/drive",
-  "https://www.googleapis.com/auth/spreadsheets",
-]
 
 # Ajusta si quieres. 60s suele funcionar bien para llamadas largas.
 HTTP_TIMEOUT_SECONDS = int(os.getenv("GOOGLE_HTTP_TIMEOUT", "60"))
@@ -42,7 +37,19 @@ HTTP_TIMEOUT_SECONDS = int(os.getenv("GOOGLE_HTTP_TIMEOUT", "60"))
 # ------------------------------------------------------------
 # Models
 # ------------------------------------------------------------
-class ConvertXlsxRequest(BaseModel):
+class ConvertXlsxToExistingSheetsRequest(BaseModel):
+    xlsx_file_id: str = Field(..., description="Drive fileId o URL del XLSX")
+    target_spreadsheet_id: str = Field(..., description="SpreadsheetId o URL del Google Sheets existente (destino)")
+    selected_tabs: List[str] = Field(..., min_items=1, description="Pestañas del XLSX a copiar")
+
+    wipe_mode: Literal["all", "selected"] = Field(
+        "all",
+        description="all=borrar valores de TODAS las hojas del destino. selected=borrar solo hojas seleccionadas."
+    )
+
+    value_input_option: Literal["RAW", "USER_ENTERED"] = Field("RAW")
+    target_cells_per_request: int = Field(80000, ge=10000, le=200000)
+    max_retries: int = Field(8, ge=1, le=15)
     xlsx_file_id: str = Field(..., description="Drive fileId o URL del XLSX")
     selected_tabs: List[str] = Field(..., min_items=1, description="Pestañas del XLSX a copiar (ej: ['mov_general'])")
 
@@ -65,40 +72,28 @@ class ConvertXlsxRequest(BaseModel):
     max_retries: int = Field(8, ge=1, le=15, description="Reintentos ante 429/5xx")
 
 
-class ConvertXlsxResponse(BaseModel):
+"""class ConvertXlsxResponse(BaseModel):
     spreadsheet_id: str
     spreadsheet_url: str
     name: str
-    destination_folder_id: str
+    destination_folder_id: str"""
 
 
 # ------------------------------------------------------------
 # Helpers (Drive/Sheets)
 # ------------------------------------------------------------
+
 def extract_drive_id(s: str) -> str:
-    """
-    Extrae un ID de Drive desde un ID puro o desde una URL.
-    """
     m = re.search(r"[-\w]{25,}", s or "")
     return m.group(0) if m else s
 
-
 def build_google_services():
-    """
-    Construye clientes Drive/Sheets usando ADC (Cloud Run service account).
-    Incluye timeout real (evita warning de per-request timeout).
-    """
     creds, _ = google.auth.default(scopes=DRIVE_SHEETS_SCOPES)
-
-    # httplib2 timeout a nivel de transporte
     http = httplib2.Http(timeout=HTTP_TIMEOUT_SECONDS)
     authed_http = AuthorizedHttp(creds, http=http)
-
     drive_service = build("drive", "v3", http=authed_http, cache_discovery=False)
     sheets_service = build("sheets", "v4", http=authed_http, cache_discovery=False)
-
     return drive_service, sheets_service
-
 
 def with_retries(fn, *, max_retries=8, base_sleep=1.0, retryable_status=(429, 500, 502, 503, 504)):
     for attempt in range(max_retries):
@@ -107,41 +102,19 @@ def with_retries(fn, *, max_retries=8, base_sleep=1.0, retryable_status=(429, 50
         except HttpError as e:
             status = getattr(e.resp, "status", None)
             if status in retryable_status and attempt < max_retries - 1:
-                sleep = base_sleep * (2**attempt) + (0.1 * attempt)
-                time.sleep(sleep)
+                time.sleep(base_sleep * (2**attempt) + (0.1 * attempt))
                 continue
             raise
 
-
 def get_drive_file_metadata(drive_service, file_id: str, fields: str = "id,name,parents,mimeType,size"):
-    return with_retries(
-        lambda: drive_service.files()
-        .get(fileId=file_id, fields=fields, supportsAllDrives=True)
-        .execute()
-    )
-
-
-def ensure_folder_access(drive_service, folder_id_or_url: str, max_retries: int) -> str:
-    folder_id = extract_drive_id(folder_id_or_url)
-    meta = with_retries(
-        lambda: drive_service.files()
-        .get(fileId=folder_id, fields="id,name,mimeType", supportsAllDrives=True)
-        .execute(),
-        max_retries=max_retries,
-    )
-    if meta.get("mimeType") != "application/vnd.google-apps.folder":
-        raise ValueError(f"El destino no es una carpeta. name={meta.get('name')} mimeType={meta.get('mimeType')}")
-    return folder_id
-
+    return with_retries(lambda: drive_service.files().get(
+        fileId=file_id, fields=fields, supportsAllDrives=True
+    ).execute())
 
 def download_drive_file(drive_service, file_id: str, out_path: str, *, max_retries: int, chunk_size: int = 8 * 1024 * 1024):
-    """
-    Descarga un archivo de Drive en chunks al filesystem (/tmp).
-    """
     request = drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
     fh = io.FileIO(out_path, "wb")
     downloader = MediaIoBaseDownload(fh, request, chunksize=chunk_size)
-
     done = False
     while not done:
         status, done = with_retries(lambda: downloader.next_chunk(), max_retries=max_retries)
@@ -149,9 +122,7 @@ def download_drive_file(drive_service, file_id: str, out_path: str, *, max_retri
             pct = int(status.progress() * 100)
             if pct % 10 == 0:
                 logger.info("Descargando XLSX... %s%%", pct)
-
     fh.close()
-
 
 def col_to_a1_letter(n: int) -> str:
     s = ""
@@ -160,17 +131,14 @@ def col_to_a1_letter(n: int) -> str:
         s = chr(65 + r) + s
     return s
 
-
 def a1_start(sheet_title: str, start_row: int, start_col: int = 1) -> str:
     return f"'{sheet_title}'!{col_to_a1_letter(start_col)}{start_row}"
-
 
 def choose_chunk_rows(num_cols: int, target_cells_per_request: int, min_rows: int = 200, max_rows: int = 5000) -> int:
     if num_cols <= 0:
         return min_rows
     rows = target_cells_per_request // max(1, num_cols)
     return int(max(min_rows, min(max_rows, rows)))
-
 
 def safe_cell(v):
     if v is None:
@@ -183,169 +151,236 @@ def safe_cell(v):
         pass
     return v
 
-
 def validate_sheet_title(title: str) -> str:
-    """
-    Sheets tiene restricciones en nombres. Excel casi siempre cumple, pero validamos por si acaso.
-    """
     forbidden = set(r'[]:*?/\\')
     if any(ch in forbidden for ch in title):
-        raise ValueError(f"Nombre de hoja inválido para Google Sheets: '{title}' (contiene caracteres prohibidos).")
+        raise ValueError(f"Nombre de hoja inválido para Google Sheets: '{title}'")
     if len(title) > 100:
         raise ValueError(f"Nombre de hoja demasiado largo (>100): '{title}'")
     if title.strip() == "":
         raise ValueError("Nombre de hoja vacío no permitido.")
     return title
 
+def _http_error_text(e: HttpError) -> str:
+    content = getattr(e, "content", b"") or b""
+    try:
+        return content.decode("utf-8", errors="ignore")
+    except Exception:
+        return str(content)
+
+def is_payload_too_large(e: HttpError) -> bool:
+    status = getattr(e.resp, "status", None)
+    txt = _http_error_text(e).lower()
+    return (
+        status in (413,) or
+        "request payload size exceeds" in txt or
+        "payload exceeds limit" in txt or
+        "entity too large" in txt
+    )
+
+def flush_values_resilient(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_title: str,
+    start_row: int,
+    values_chunk,
+    *,
+    value_input_option: str,
+    max_retries: int,
+):
+    """Escribe un chunk; si el payload es grande, divide y reintenta."""
+    if not values_chunk:
+        return
+
+    rng = a1_start(sheet_title, start_row, 1)
+    end_row = start_row + len(values_chunk) - 1
+
+    try:
+        logger.info("Escribiendo %s! filas %s-%s (%s filas)", sheet_title, start_row, end_row, len(values_chunk))
+        with_retries(lambda: sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=rng,
+            valueInputOption=value_input_option,
+            body={"values": values_chunk},
+        ).execute(), max_retries=max_retries)
+
+    except HttpError as e:
+        # LOG DEL ERROR REAL
+        logger.warning("Fallo escribiendo %s filas %s-%s. status=%s body=%s",
+                       sheet_title, start_row, end_row, getattr(e.resp, "status", None), _http_error_text(e)[:1000])
+
+        # AUTOSPLIT si es payload grande
+        if is_payload_too_large(e) and len(values_chunk) > 1:
+            mid = len(values_chunk) // 2
+            flush_values_resilient(sheets_service, spreadsheet_id, sheet_title, start_row, values_chunk[:mid],
+                                   value_input_option=value_input_option, max_retries=max_retries)
+            flush_values_resilient(sheets_service, spreadsheet_id, sheet_title, start_row + mid, values_chunk[mid:],
+                                   value_input_option=value_input_option, max_retries=max_retries)
+            return
+        raise
+
+def resize_sheets_grid(sheets_service, spreadsheet_id: str, title_to_id: dict, title_to_size: dict, *, max_retries: int):
+    """
+    title_to_size: { "Hoja": (rowCount, columnCount) }
+    """
+    requests = []
+    for title, (r, c) in title_to_size.items():
+        sheet_id = title_to_id[title]
+        requests.append({
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {
+                        "rowCount": int(max(1, r)),
+                        "columnCount": int(max(1, c)),
+                    },
+                },
+                "fields": "gridProperties.rowCount,gridProperties.columnCount",
+            }
+        })
+
+    if requests:
+        with_retries(lambda: sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests}
+        ).execute(), max_retries=max_retries)
 
 # ------------------------------------------------------------
 # Core conversion
 # ------------------------------------------------------------
-def convert_xlsx_tabs_to_sheets(
+
+def write_xlsx_tabs_into_existing_spreadsheet(
     *,
     drive_service,
     sheets_service,
     xlsx_file_id: str,
+    target_spreadsheet_id: str,
     selected_tabs: List[str],
-    destination_folder_id: Optional[str],
-    new_spreadsheet_name: Optional[str],
+    wipe_mode: str,
     value_input_option: str,
     target_cells_per_request: int,
     max_retries: int,
-) -> ConvertXlsxResponse:
+):
     xlsx_file_id = extract_drive_id(xlsx_file_id)
+    target_spreadsheet_id = extract_drive_id(target_spreadsheet_id)
     selected_tabs = [validate_sheet_title(t) for t in selected_tabs]
 
-    # 1) Metadata XLSX (nombre + carpeta padre)
-    meta = get_drive_file_metadata(drive_service, xlsx_file_id)
-    xlsx_name = meta.get("name", "archivo.xlsx")
-    parents = meta.get("parents") or []
+    # 1) Verificar acceso al spreadsheet destino + obtener hojas existentes
+    try:
+        ss_meta = with_retries(lambda: sheets_service.spreadsheets().get(
+            spreadsheetId=target_spreadsheet_id,
+            fields="properties(title),sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"
+        ).execute(), max_retries=max_retries)
 
-    if destination_folder_id:
-        destination_folder_id = ensure_folder_access(drive_service, destination_folder_id, max_retries=max_retries)
-    else:
-        if not parents:
-            raise ValueError("No pude obtener la carpeta padre del XLSX; envía destination_folder_id.")
-        destination_folder_id = parents[0]
+        title_to_id = {s["properties"]["title"]: s["properties"]["sheetId"] for s in ss_meta.get("sheets", [])}
+        existing_titles = list(title_to_id.keys())
+    except HttpError as e:
+        raise ValueError("No tengo acceso al Google Sheets destino (comparte el archivo con la service account como Editor).") from e
 
-    base_name = os.path.splitext(xlsx_name)[0]
-    spreadsheet_name = new_spreadsheet_name or f"{base_name} (seleccion)"
+    dest_title = ss_meta["properties"]["title"]
+    existing_sheets = ss_meta.get("sheets", [])
+    existing_titles = [s["properties"]["title"] for s in existing_sheets]
 
-    # 2) Descargar XLSX a /tmp
+    # 2) Descargar XLSX
     tmp = tempfile.NamedTemporaryFile(prefix="xlsx_", suffix=".xlsx", dir="/tmp", delete=False)
     tmp_path = tmp.name
     tmp.close()
 
     logger.info("Descargando XLSX (fileId=%s) a %s", xlsx_file_id, tmp_path)
+
     try:
         download_drive_file(drive_service, xlsx_file_id, tmp_path, max_retries=max_retries)
         logger.info("Descarga completada: %s", tmp_path)
 
-        # 3) Crear Google Sheets en carpeta destino (Drive API)
-        created = with_retries(
-            lambda: drive_service.files().create(
-                body={
-                    "name": spreadsheet_name,
-                    "mimeType": "application/vnd.google-apps.spreadsheet",
-                    "parents": [destination_folder_id],
-                },
-                fields="id,name",
-                supportsAllDrives=True,
-            ).execute(),
-            max_retries=max_retries,
-        )
-        spreadsheet_id = created["id"]
-
-        # 4) Leer XLSX streaming
+        # 3) Cargar XLSX streaming
         wb = load_workbook(filename=tmp_path, read_only=True, data_only=True)
         available = wb.sheetnames
         missing = [t for t in selected_tabs if t not in available]
         if missing:
-            raise ValueError(f"Pestañas no encontradas: {missing}. Disponibles: {available}")
+            raise ValueError(f"Pestañas no encontradas en el XLSX: {missing}. Disponibles: {available}")
 
-        # 5) Crear hojas seleccionadas
-        add_requests = [{"addSheet": {"properties": {"title": t}}} for t in selected_tabs]
-        with_retries(
-            lambda: sheets_service.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id, body={"requests": add_requests}
-            ).execute(),
-            max_retries=max_retries,
-        )
+        # 4) Asegurar que existen las hojas destino (crear si faltan)
+        to_add = [t for t in selected_tabs if t not in existing_titles]
+        if to_add:
+            add_requests = [{"addSheet": {"properties": {"title": t}}} for t in to_add]
+            with_retries(lambda: sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=target_spreadsheet_id,
+                body={"requests": add_requests}
+            ).execute(), max_retries=max_retries)
 
-        # 6) Escribir cada hoja en chunks
-        def flush_values(sheet_title: str, start_row: int, values_chunk):
+            # refrescar títulos existentes
+            ss_meta = with_retries(lambda: sheets_service.spreadsheets().get(
+                spreadsheetId=target_spreadsheet_id,
+                fields="sheets(properties(title))"
+            ).execute(), max_retries=max_retries)
+            existing_titles = [s["properties"]["title"] for s in ss_meta.get("sheets", [])]
+
+        # 5) BORRAR CONTENIDO (wipe)
+        # Desinfla todo (si wipe_mode="all") para liberar celdas del workbook
+        if wipe_mode == "all":
+            shrink_sizes = {t: (1, 1) for t in existing_titles}
+            resize_sheets_grid(sheets_service, target_spreadsheet_id, title_to_id, shrink_sizes, max_retries=max_retries)
+
+        # Ajusta las hojas destino al tamaño que vas a necesitar (según max_row/max_col del XLSX)
+        target_sizes = {}
+        for tab in selected_tabs:
+            ws = wb[tab]
+            target_sizes[tab] = (ws.max_row or 1, ws.max_column or 1)
+
+        resize_sheets_grid(sheets_service, target_spreadsheet_id, title_to_id, target_sizes, max_retries=max_retries)
+
+
+        logger.info("Wipe completado (%s).", wipe_mode)
+
+        # 6) Escribir hojas seleccionadas en chunks
+        def flush_values_resilient(sheet_title: str, start_row: int, values_chunk):
             if not values_chunk:
                 return
             rng = a1_start(sheet_title, start_row, 1)
-            with_retries(
-                lambda: sheets_service.spreadsheets().values().update(
-                    spreadsheetId=spreadsheet_id,
-                    range=rng,
-                    valueInputOption=value_input_option,
-                    body={"values": values_chunk},
-                ).execute(),
-                max_retries=max_retries,
-            )
+            with_retries(lambda: sheets_service.spreadsheets().values().update(
+                spreadsheetId=target_spreadsheet_id,
+                range=rng,
+                valueInputOption=value_input_option,
+                body={"values": values_chunk}
+            ).execute(), max_retries=max_retries)
 
         for tab in selected_tabs:
             ws = wb[tab]
             max_col = ws.max_column or 0
             chunk_rows = choose_chunk_rows(max_col, target_cells_per_request=target_cells_per_request)
 
+            # tope duro para evitar requests gigantes
+            chunk_rows = min(chunk_rows, 1000)
+
             logger.info("Copiando hoja '%s' (cols≈%s) en chunks de %s filas", tab, max_col, chunk_rows)
 
             row_cursor = 1
             buffer = []
-
             for row in ws.iter_rows(values_only=True):
                 buffer.append([safe_cell(v) for v in row])
                 if len(buffer) >= chunk_rows:
-                    flush_values(tab, row_cursor, buffer)
+                    flush_values_resilient(tab, row_cursor, buffer)
                     row_cursor += len(buffer)
                     buffer = []
 
             if buffer:
-                flush_values(tab, row_cursor, buffer)
+                flush_values_resilient(tab, row_cursor, buffer)
 
-            logger.info("Hoja '%s' copiada", tab)
+            logger.info("Hoja '%s' copiada.", tab)
 
-        # 7) Borrar Sheet1 si sobra
-        meta_sheets = with_retries(
-            lambda: sheets_service.spreadsheets().get(
-                spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title))"
-            ).execute(),
-            max_retries=max_retries,
-        )
-        sheet1_ids = [
-            s["properties"]["sheetId"]
-            for s in meta_sheets.get("sheets", [])
-            if s["properties"]["title"] == "Sheet1"
-        ]
-        if sheet1_ids and "Sheet1" not in selected_tabs:
-            with_retries(
-                lambda: sheets_service.spreadsheets().batchUpdate(
-                    spreadsheetId=spreadsheet_id,
-                    body={"requests": [{"deleteSheet": {"sheetId": sheet1_ids[0]}}]},
-                ).execute(),
-                max_retries=max_retries,
-            )
-
-        url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
-        return ConvertXlsxResponse(
-            spreadsheet_id=spreadsheet_id,
-            spreadsheet_url=url,
-            name=spreadsheet_name,
-            destination_folder_id=destination_folder_id,
-        )
+        return {
+            "spreadsheet_id": target_spreadsheet_id,
+            "spreadsheet_url": f"https://docs.google.com/spreadsheets/d/{target_spreadsheet_id}",
+            "name": dest_title,
+            "wipe_mode": wipe_mode,
+        }
 
     finally:
-        # Limpieza del temp XLSX
         try:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
         except Exception:
             logger.warning("No pude borrar temp file: %s", tmp_path)
-
 
 # Debug
 
