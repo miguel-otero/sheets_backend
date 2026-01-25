@@ -29,6 +29,12 @@ DRIVE_SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
+#Debug
+SCOPES = [
+  "https://www.googleapis.com/auth/drive",
+  "https://www.googleapis.com/auth/spreadsheets",
+]
+
 # Ajusta si quieres. 60s suele funcionar bien para llamadas largas.
 HTTP_TIMEOUT_SECONDS = int(os.getenv("GOOGLE_HTTP_TIMEOUT", "60"))
 
@@ -339,3 +345,12 @@ def convert_xlsx_tabs_to_sheets(
                 os.remove(tmp_path)
         except Exception:
             logger.warning("No pude borrar temp file: %s", tmp_path)
+
+
+# Debug
+
+def drive_client():
+    creds, _ = google.auth.default(scopes=SCOPES)
+    http = httplib2.Http(timeout=60)
+    authed = AuthorizedHttp(creds, http=http)
+    return build("drive", "v3", http=authed, cache_discovery=False)

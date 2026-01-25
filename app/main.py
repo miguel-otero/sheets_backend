@@ -8,9 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from googleapiclient.errors import HttpError
 from fastapi import HTTPException
 
+
 # Inner dependencies
 from config import DEPLOYMENT_VERSION, xlsx_file_id, destination_folder_id
-from gs import ConvertXlsxResponse, ConvertXlsxRequest, build_google_services, convert_xlsx_tabs_to_sheets
+from gs import ConvertXlsxResponse, ConvertXlsxRequest, build_google_services, convert_xlsx_tabs_to_sheets, drive_client
 
 
 app = FastAPI()
@@ -68,3 +69,12 @@ def convert_gs(payload: ConvertXlsxRequest):
     except Exception as e:
         logger.exception("Fallo inesperado")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Debug
+
+@app.get("/debug/whoami")
+def whoami():
+    drive = drive_client()
+    about = drive.about().get(fields="user(emailAddress,permissionId),storageQuota").execute()
+    return about
+
