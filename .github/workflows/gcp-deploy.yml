@@ -19,7 +19,8 @@ permissions:
 env:
   CONN_VARIABLES: |
     [
-      {"path":".env", "var":"ENV_FILE"}
+      {"path":".env", "var":"ENV_FILE"},
+      {"path":"back.env", "var":"BACK_ENV_FILE"}
     ]
 
 jobs:
