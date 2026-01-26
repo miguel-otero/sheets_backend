@@ -39,8 +39,7 @@ jobs:
         shell: bash
         env:
           ENV_FILE: ${{ vars.ENV_FILE }}
-          BACKEND_ENV_FILE: ${{ vars.BACKEND_ENV_FILE }}
-          FRONTEND_ENV_FILE: ${{ vars.FRONTEND_ENV_FILE }}
+          BACK_ENV_FILE: ${{ vars.BACK_ENV_FILE }}
         run: |
           set -euo pipefail
 
