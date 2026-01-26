@@ -1,3 +1,6 @@
+#!/bin/bash
+set -e
+
 DeployImage() {
   # Load gcp credentials
   sh ./scripts/gcp_login.sh
