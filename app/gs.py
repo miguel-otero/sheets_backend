@@ -72,13 +72,6 @@ class ConvertXlsxToExistingSheetsRequest(BaseModel):
     max_retries: int = Field(8, ge=1, le=15, description="Reintentos ante 429/5xx")
 
 
-"""class ConvertXlsxResponse(BaseModel):
-    spreadsheet_id: str
-    spreadsheet_url: str
-    name: str
-    destination_folder_id: str"""
-
-
 # ------------------------------------------------------------
 # Helpers (Drive/Sheets)
 # ------------------------------------------------------------
