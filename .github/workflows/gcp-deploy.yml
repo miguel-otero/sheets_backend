@@ -11,6 +11,11 @@ on:
         options:
           - deploy
           - destroy
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"          # solo si cambió algo dentro de app/
 
 permissions:
   contents: read
