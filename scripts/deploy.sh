@@ -31,6 +31,9 @@ DeployBackend() {
     --image $REGION-docker.pkg.dev/$PROJECT/$BASE_NAME/$SERVICE \
     --platform managed \
     --region $REGION \
+    --memory 2Gi \
+    --cpi 2 \
+    --max 1 \
     --port 80 \
     --timeout 3600 \
     --env-vars-file conn/$SERVICE.yaml \
