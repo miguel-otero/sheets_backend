@@ -32,7 +32,7 @@ DeployBackend() {
     --platform managed \
     --region $REGION \
     --memory 2Gi \
-    --cpi 2 \
+    --cpu 2 \
     --max 1 \
     --port 80 \
     --timeout 3600 \
