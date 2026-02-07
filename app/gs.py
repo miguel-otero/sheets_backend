@@ -307,23 +307,45 @@ def write_xlsx_tabs_into_existing_spreadsheet(
                 fields="sheets(properties(title))"
             ).execute(), max_retries=max_retries)
             existing_titles = [s["properties"]["title"] for s in ss_meta.get("sheets", [])]
+            
+        # refrescar title_to_id (NECESARIO para resize y wipe por sheetId)
+        ss_meta = with_retries(lambda: sheets_service.spreadsheets().get(
+            spreadsheetId=target_spreadsheet_id,
+            fields="sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"
+        ).execute(), max_retries=max_retries)
 
-        # 5) BORRAR CONTENIDO (wipe)
-        # Desinfla todo (si wipe_mode="all") para liberar celdas del workbook
-        if wipe_mode == "all":
-            shrink_sizes = {t: (1, 1) for t in existing_titles}
-            resize_sheets_grid(sheets_service, target_spreadsheet_id, title_to_id, shrink_sizes, max_retries=max_retries)
+        title_to_id = {s["properties"]["title"]: s["properties"]["sheetId"] for s in ss_meta.get("sheets", [])}
+        existing_titles = list(title_to_id.keys())
+        
+        # 5) BORRAR CONTENIDO (wipe) - SOLO mov_general (valores)
+        tab_to_wipe = "mov_general"
+        
+        if tab_to_wipe not in selected_tabs:
+            raise ValueError(f"Para este endpoint el wipe está fijo a '{tab_to_wipe}', pero no viene en selected_tabs.")
+        
+        # Asegurar que existe en el destino
+        if tab_to_wipe not in title_to_id:
+            # si la hoja no existe aún y la vas a crear, asegúrate de refrescar title_to_id después de addSheet
+            pass
+        
+        # 5.1 Borrar valores SOLO de mov_general (no toca el resto)
+        with_retries(lambda: sheets_service.spreadsheets().values().batchClear(
+            spreadsheetId=target_spreadsheet_id,
+            body={"ranges": [f"'{tab_to_wipe}'"]}
+        ).execute(), max_retries=max_retries)
+        
+        # 5.2 (Opcional) ajustar SOLO mov_general al tamaño del XLSX para evitar "grid inflado"
+        ws = wb[tab_to_wipe]
+        resize_sheets_grid(
+            sheets_service,
+            target_spreadsheet_id,
+            title_to_id,
+            {tab_to_wipe: (ws.max_row or 1, ws.max_column or 1)},
+            max_retries=max_retries
+        )
+        
+        logger.info("Wipe completado SOLO para '%s'.", tab_to_wipe)
 
-        # Ajusta las hojas destino al tamaño que vas a necesitar (según max_row/max_col del XLSX)
-        target_sizes = {}
-        for tab in selected_tabs:
-            ws = wb[tab]
-            target_sizes[tab] = (ws.max_row or 1, ws.max_column or 1)
-
-        resize_sheets_grid(sheets_service, target_spreadsheet_id, title_to_id, target_sizes, max_retries=max_retries)
-
-
-        logger.info("Wipe completado (%s).", wipe_mode)
 
         # 6) Escribir hojas seleccionadas en chunks
         def flush_values_resilient(sheet_title: str, start_row: int, values_chunk):
@@ -382,3 +404,4 @@ def drive_client():
     http = httplib2.Http(timeout=60)
     authed = AuthorizedHttp(creds, http=http)
     return build("drive", "v3", http=authed, cache_discovery=False)
+
