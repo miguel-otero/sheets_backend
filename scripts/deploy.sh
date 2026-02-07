@@ -31,7 +31,7 @@ DeployBackend() {
     --image $REGION-docker.pkg.dev/$PROJECT/$BASE_NAME/$SERVICE \
     --platform managed \
     --region $REGION \
-    --memory 2Gi \
+    --memory 4Gi \
     --cpu 2 \
     --max 1 \
     --port 80 \
