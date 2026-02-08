@@ -33,8 +33,8 @@ This project is a backend service built with **FastAPI** designed to automate in
 
 ## 🔄 Project Workflow
 
-1.  **Request Initiation:**
-    -   The user sends a POST request to the API with the source Excel file ID and target Google Sheet ID.
+1.  **Scheduled Trigger (GCP Scheduler):**
+    -   A Cloud Scheduler job runs daily, sending a POST request to the API with the source Excel file ID and target Google Sheet ID.
 
 2.  **File Retrieval:**
     -   The service authenticates with Google Drive and downloads the specified `.xlsx` file.
