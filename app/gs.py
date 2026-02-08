@@ -138,8 +138,14 @@ def safe_cell(v):
         return ""
     try:
         import datetime as dt
-        if isinstance(v, (dt.datetime, dt.date)):
-            return v.isoformat()
+
+        # Si viene datetime -> quedarnos solo con la fecha
+        if isinstance(v, dt.datetime):
+            return v.date().isoformat()   # "YYYY-MM-DD"
+
+        # Si ya es date -> ok
+        if isinstance(v, dt.date):
+            return v.isoformat()          # "YYYY-MM-DD"
     except Exception:
         pass
     return v
@@ -404,4 +410,5 @@ def drive_client():
     http = httplib2.Http(timeout=60)
     authed = AuthorizedHttp(creds, http=http)
     return build("drive", "v3", http=authed, cache_discovery=False)
+
 
