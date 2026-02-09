@@ -30,7 +30,7 @@ DRIVE_SHEETS_SCOPES = [
 ]
 
 
-# Ajusta si quieres. 60s suele funcionar bien para llamadas largas.
+# 60s suele funcionar bien para llamadas largas.
 HTTP_TIMEOUT_SECONDS = int(os.getenv("GOOGLE_HTTP_TIMEOUT", "60"))
 
 
@@ -139,11 +139,11 @@ def safe_cell(v):
     try:
         import datetime as dt
 
-        # Si viene datetime -> quedarnos solo con la fecha
+        # Si viene datetime nos quedamos solo con la fecha
         if isinstance(v, dt.datetime):
             return v.date().isoformat()   # "YYYY-MM-DD"
 
-        # Si ya es date -> ok
+        # Si ya es date, ok
         if isinstance(v, dt.date):
             return v.isoformat()          # "YYYY-MM-DD"
     except Exception:
@@ -410,5 +410,6 @@ def drive_client():
     http = httplib2.Http(timeout=60)
     authed = AuthorizedHttp(creds, http=http)
     return build("drive", "v3", http=authed, cache_discovery=False)
+
 
 
